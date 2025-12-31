@@ -17,7 +17,8 @@ import { supabase } from "@/lib/supabase";
 
 type Vehicle = {
   id: string;
-  licenseplate: string;
+  unitId: string;
+  licensePlate: string;
   make: string;
   model: string;
   color: string;
@@ -25,15 +26,11 @@ type Vehicle = {
 };
 
 function normalizePlate(input: string) {
-  // Keep letters/numbers only, remove dashes/spaces/symbols, uppercase.
-  return input.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+  return (input || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
 }
 
 const vehicleSchema = z.object({
-  licenseplate: z
-    .string()
-    .min(2, "License plate is required")
-    .transform((v) => normalizePlate(v)),
+  licensePlate: z.string().min(2, "License plate is required").transform((v) => normalizePlate(v)),
   make: z.string().min(2, "Make is required"),
   model: z.string().min(1, "Model is required"),
   color: z.string().min(3, "Color is required"),
@@ -45,11 +42,7 @@ export default function ResidentVehicles() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // We keep unitId for compatibility with your existing login flow,
-  // but Supabase persistence is keyed by building + unit.
   const [unitId, setUnitId] = useState<string | null>(null);
-  const [buildingNumber, setBuildingNumber] = useState<string | null>(null);
-  const [unitNumber, setUnitNumber] = useState<string | null>(null);
   const [unitLabel, setUnitLabel] = useState<string | null>(null);
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -60,62 +53,58 @@ export default function ResidentVehicles() {
     const num = localStorage.getItem("unitNumber");
     const bldg = localStorage.getItem("buildingNumber");
 
-    // Require building+unit for Supabase filters
-    if (!id || !num || !bldg) {
+    if (!id) {
       setLocation("/");
       return;
     }
 
     setUnitId(id);
-    setUnitNumber(num);
-    setBuildingNumber(bldg);
-    setUnitLabel(`Bldg ${bldg} - Unit ${num}`);
+
+    if (bldg && num) setUnitLabel(`Bldg ${bldg} - Unit ${num}`);
+    else setUnitLabel(num);
   }, [setLocation]);
 
   const form = useForm<z.infer<typeof vehicleSchema>>({
     resolver: zodResolver(vehicleSchema),
-    defaultValues: { licenseplate: "", make: "", model: "", color: "", nickname: "" },
+    defaultValues: { licensePlate: "", make: "", model: "", color: "", nickname: "" },
   });
 
-  // Reset form when dialog opens/closes
   useEffect(() => {
     if (!isDialogOpen) return;
 
     if (editingVehicle) {
       form.reset({
-        licenseplate: editingVehicle.licenseplate,
+        licensePlate: editingVehicle.licensePlate,
         make: editingVehicle.make,
         model: editingVehicle.model,
         color: editingVehicle.color,
         nickname: editingVehicle.nickname || "",
       });
     } else {
-      form.reset({ licenseplate: "", make: "", model: "", color: "", nickname: "" });
+      form.reset({ licensePlate: "", make: "", model: "", color: "", nickname: "" });
     }
   }, [isDialogOpen, editingVehicle, form]);
 
-  const { data: vehicles, isLoading } = useQuery({
-    queryKey: ["vehicles", buildingNumber, unitNumber],
-    enabled: !!buildingNumber && !!unitNumber,
+  const { data: vehicles = [], isLoading } = useQuery({
+    queryKey: ["vehicles", unitId],
+    enabled: !!unitId,
     queryFn: async (): Promise<Vehicle[]> => {
       const { data, error } = await supabase
         .from("vehicles")
-        .select("id, licenseplate, make, model, color, nickname, created_at")
-        .eq("building", buildingNumber!)
-        .eq("unit", unitNumber!)
+        .select("id, unit_id, licenseplate, make, model, color, nickname, created_at")
+        .eq("unit_id", unitId!)
         .order("created_at", { ascending: false });
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
       return (data ?? []).map((v: any) => ({
         id: v.id,
-        licenseplate: v.licenseplate,
+        unitId: v.unit_id,
+        licensePlate: v.licenseplate,
         make: v.make ?? "",
         model: v.model ?? "",
         color: v.color ?? "",
-        nickname: v.nickname ?? "",
+        nickname: v.nickname ?? null,
       }));
     },
   });
@@ -124,16 +113,14 @@ export default function ResidentVehicles() {
     mutationFn: async (data: z.infer<typeof vehicleSchema>) => {
       const { error } = await supabase.from("vehicles").insert([
         {
-          building: buildingNumber!,
-          unit: unitNumber!,
-          licenseplate: data.licenseplate,
+          unit_id: unitId!,
+          licenseplate: data.licensePlate,
           make: data.make,
           model: data.model,
           color: data.color,
           nickname: data.nickname || null,
         },
       ]);
-
       if (error) throw error;
     },
     onSuccess: () => {
@@ -155,13 +142,14 @@ export default function ResidentVehicles() {
       const { error } = await supabase
         .from("vehicles")
         .update({
-          licenseplate: data.licenseplate,
+          licenseplate: data.licensePlate,
           make: data.make,
           model: data.model,
           color: data.color,
           nickname: data.nickname || null,
         })
-        .eq("id", editingVehicle!.id);
+        .eq("id", editingVehicle!.id)
+        .eq("unit_id", unitId!);
 
       if (error) throw error;
     },
@@ -182,7 +170,7 @@ export default function ResidentVehicles() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from("vehicles").delete().eq("id", id);
+      const { error } = await supabase.from("vehicles").delete().eq("id", id).eq("unit_id", unitId!);
       if (error) throw error;
     },
     onSuccess: () => {
@@ -199,11 +187,8 @@ export default function ResidentVehicles() {
   });
 
   const onSubmit = (data: z.infer<typeof vehicleSchema>) => {
-    if (editingVehicle) {
-      updateMutation.mutate(data);
-    } else {
-      addMutation.mutate(data);
-    }
+    if (editingVehicle) updateMutation.mutate(data);
+    else addMutation.mutate(data);
   };
 
   if (!unitId) return null;
@@ -233,7 +218,7 @@ export default function ResidentVehicles() {
               <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
                 <FormField
                   control={form.control}
-                  name="licenseplate"
+                  name="licensePlate"
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>License Plate</FormLabel>
@@ -304,11 +289,7 @@ export default function ResidentVehicles() {
 
                 <DialogFooter className="mt-4">
                   <Button type="submit" disabled={addMutation.isPending || updateMutation.isPending}>
-                    {addMutation.isPending || updateMutation.isPending ? (
-                      <Loader2 className="animate-spin" />
-                    ) : (
-                      "Save Vehicle"
-                    )}
+                    {addMutation.isPending || updateMutation.isPending ? <Loader2 className="animate-spin" /> : "Save Vehicle"}
                   </Button>
                 </DialogFooter>
               </form>
@@ -320,11 +301,11 @@ export default function ResidentVehicles() {
           <div>Loading...</div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {vehicles?.map((vehicle) => (
+            {vehicles.map((vehicle) => (
               <Card key={vehicle.id} className="relative group hover:border-primary/50 transition-colors">
                 <CardHeader className="pb-2">
                   <CardTitle className="flex justify-between items-start">
-                    <span className="font-display tracking-wide">{vehicle.licenseplate}</span>
+                    <span className="font-display tracking-wide">{vehicle.licensePlate}</span>
                     <div className="flex gap-1">
                       <Button
                         variant="ghost"
@@ -342,9 +323,7 @@ export default function ResidentVehicles() {
                         size="icon"
                         className="h-8 w-8 hover:text-destructive"
                         onClick={() => {
-                          if (confirm("Are you sure you want to delete this vehicle?")) {
-                            deleteMutation.mutate(vehicle.id);
-                          }
+                          if (confirm("Are you sure you want to delete this vehicle?")) deleteMutation.mutate(vehicle.id);
                         }}
                       >
                         <Trash2 className="w-4 h-4 text-muted-foreground" />
@@ -373,7 +352,7 @@ export default function ResidentVehicles() {
               </Card>
             ))}
 
-            {vehicles?.length === 0 && (
+            {vehicles.length === 0 && (
               <div className="col-span-full py-12 text-center border-dashed border-2 rounded-lg text-muted-foreground">
                 <Car className="w-12 h-12 mx-auto mb-4 opacity-20" />
                 <p>No vehicles saved yet. Add one to get started.</p>
