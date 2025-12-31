@@ -81,31 +81,31 @@ const INITIAL_UNITS: Unit[] = INITIAL_BUILDINGS.map((building, i) => ({
 INITIAL_UNITS.push({ id: "u102", buildingId: "b1", number: "102", accessCode: "5678", freePassLimit: 12, partyDays: [] });
 INITIAL_UNITS.push({ id: "u103", buildingId: "b1", number: "103", accessCode: "9012", freePassLimit: 12, partyDays: [] });
 
-const INITIAL_VEHICLES: Vehicle[] = [
-  { id: "v1", unitId: "u1", licensePlate: "ABC-123", make: "Toyota", model: "Camry", color: "Silver", nickname: "Mom's Car" },
-  { id: "v2", unitId: "u1", licensePlate: "XYZ-999", make: "Honda", model: "Civic", color: "Black" },
-];
+//const INITIAL_VEHICLES: Vehicle[] = [
+//  { id: "v1", unitId: "u1", licensePlate: "ABC-123", make: "Toyota", model: "Camry", color: "Silver", nickname: "Mom's Car" },
+//  { id: "v2", unitId: "u1", licensePlate: "XYZ-999", make: "Honda", model: "Civic", color: "Black" },
+//];
 
-const INITIAL_PASSES: Pass[] = [
-  {
-    id: "p1",
-    unitId: "u1",
-    vehicleId: "v1",
-    vehicleSnapshot: { licensePlate: "ABC-123", make: "Toyota", model: "Camry", color: "Silver", nickname: "Mom's Car" },
-    createdAt: new Date().toISOString(),
-    expiresAt: addHours(new Date(), 24).toISOString(),
-    type: "free",
-    paymentStatus: "free",
-  },
-];
+//const INITIAL_PASSES: Pass[] = [
+//  {
+//    id: "p1",
+//    unitId: "u1",
+//    vehicleId: "v1",
+//    vehicleSnapshot: { licensePlate: "ABC-123", make: "Toyota", model: "Camry", color: "Silver", nickname: "Mom's Car" },
+//    createdAt: new Date().toISOString(),
+//    expiresAt: addHours(new Date(), 24).toISOString(),
+//    type: "free",
+//    paymentStatus: "free",
+//  },
+//];
 
 // --- Store ---
 
 let settings = { ...INITIAL_SETTINGS };
 let buildings = [...INITIAL_BUILDINGS];
 let units = [...INITIAL_UNITS];
-let vehicles = [...INITIAL_VEHICLES];
-let passes = [...INITIAL_PASSES];
+//let vehicles = [...INITIAL_VEHICLES];
+//let passes = [...INITIAL_PASSES];
 
 // --- API Functions ---
 
