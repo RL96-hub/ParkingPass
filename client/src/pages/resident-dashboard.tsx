@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Clock, History, AlertCircle, RefreshCw, PartyPopper } from "lucide-react";
@@ -16,37 +16,24 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 
-// Mock API (passes + settings + unit data still come from here)
-import { api } from "@/lib/mock-data";
-
-// Supabase vehicles (read only for now)
-import { getVehiclesByUnit, normalizePlate, VehicleRow } from "@/lib/vehicles-db";
+import { api } from "@/lib/mock-data"; // still used for unit/settings logic for now
+import { supabase } from "@/lib/supabase";
+import { getVehiclesByUnit } from "@/lib/vehicles-db";
+import {
+  getPassesByUnit,
+  insertPass,
+  hasActivePass,
+  countFreePassesThisMonth,
+} from "@/lib/passes-db";
 
 type UiVehicle = {
-  id: string; // Supabase row id
+  id: string;
   licensePlate: string;
   make: string;
   model: string;
   color: string;
   nickname?: string | null;
 };
-
-type VehicleIdMap = Record<string, string>; // supabaseVehicleId -> mockVehicleId
-
-function loadVehicleIdMap(): VehicleIdMap {
-  try {
-    const raw = localStorage.getItem("vehicleIdMap");
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveVehicleIdMap(map: VehicleIdMap) {
-  localStorage.setItem("vehicleIdMap", JSON.stringify(map));
-}
 
 export default function ResidentDashboard() {
   const [, setLocation] = useLocation();
@@ -56,13 +43,10 @@ export default function ResidentDashboard() {
   const [unitId, setUnitId] = useState<string | null>(null);
   const [unitLabel, setUnitLabel] = useState<string | null>(null);
 
-  // Pass modal state
+  // New Pass State
   const [isNewPassOpen, setIsNewPassOpen] = useState(false);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>("");
   const [passType, setPassType] = useState<"regular" | "party">("regular");
-
-  // Map Supabase vehicle ids -> Mock vehicle ids (persisted)
-  const [vehicleIdMap, setVehicleIdMap] = useState<VehicleIdMap>({});
 
   useEffect(() => {
     const id = localStorage.getItem("unitId");
@@ -78,42 +62,32 @@ export default function ResidentDashboard() {
 
     if (bldg && num) setUnitLabel(`Bldg ${bldg} - Unit ${num}`);
     else setUnitLabel(num);
-
-    // load mapping once
-    setVehicleIdMap(loadVehicleIdMap());
   }, [setLocation]);
 
-  // Mock passes
-  const { data: passes, isLoading: passesLoading } = useQuery({
-    queryKey: ["passes", unitId],
-    queryFn: () => api.getUnitPasses(unitId!),
-    enabled: !!unitId,
-  });
-
-  // Supabase vehicles
-  const {
-    data: dbVehicles,
-    isLoading: vehiclesLoading,
-    error: vehiclesError,
-  } = useQuery({
+  // ---------------------------
+  // Vehicles (Supabase)
+  // ---------------------------
+  const { data: vehiclesRaw, isLoading: vehiclesLoading } = useQuery({
     queryKey: ["vehicles", unitId],
     queryFn: () => getVehiclesByUnit(unitId!),
     enabled: !!unitId,
   });
 
-  // Convert DB rows -> UI vehicles (and normalize plate)
   const vehicles: UiVehicle[] = useMemo(() => {
-    const rows = (dbVehicles || []) as VehicleRow[];
+    const rows: any[] = (vehiclesRaw as any[]) || [];
     return rows.map((v) => ({
       id: v.id,
-      licensePlate: normalizePlate(v.licenseplate),
+      licensePlate: v.licenseplate ?? v.licensePlate ?? "",
       make: v.make ?? "",
       model: v.model ?? "",
       color: v.color ?? "",
       nickname: v.nickname ?? null,
     }));
-  }, [dbVehicles]);
+  }, [vehiclesRaw]);
 
+  // ---------------------------
+  // Unit + settings (still mock for now)
+  // ---------------------------
   const { data: unitData } = useQuery({
     queryKey: ["unit", unitId],
     queryFn: () => api.getUnit(unitId!),
@@ -125,42 +99,124 @@ export default function ResidentDashboard() {
     queryFn: api.getSettings,
   });
 
+  // ---------------------------
+  // Passes (Supabase)
+  // ---------------------------
+  const { data: passesRaw, isLoading: passesLoading } = useQuery({
+    queryKey: ["passes", unitId],
+    queryFn: () => getPassesByUnit(unitId!),
+    enabled: !!unitId,
+  });
+
+  // Normalize Supabase columns -> UI expected fields
+  const passes = useMemo(() => {
+    const rows: any[] = (passesRaw as any[]) || [];
+    return rows.map((p) => ({
+      ...p,
+      vehicleSnapshot: p.vehicle_snapshot,
+      createdAt: p.created_at,
+      expiresAt: p.expires_at,
+      paymentStatus: p.payment_status,
+    }));
+  }, [passesRaw]);
+
+  const activePasses = passes.filter((p) => isAfter(parseISO(p.expiresAt), new Date()));
+  const expiredPasses = passes.filter((p) => !isAfter(parseISO(p.expiresAt), new Date()));
+
+  // ---------------------------
+  // Allowance logic (still using unit/settings from mock)
+  // ---------------------------
+  const currentMonth = new Date().getMonth();
+
+  const freePassesUsed = passes.filter((p) => {
+    const d = parseISO(p.createdAt);
+    return d.getMonth() === currentMonth && p.type === "free";
+  }).length;
+
+  const freePassesRemaining = Math.max(0, (unitData?.freePassLimit || 12) - freePassesUsed);
+
+  const partyDaysUsed =
+    unitData?.partyDays?.filter((d) => new Date(d).getMonth() === currentMonth).length || 0;
+
+  const partyPassesRemaining = Math.max(0, (settings?.partyPassLimit || 3) - partyDaysUsed);
+
+  const isTodayPartyDay = unitData?.partyDays?.includes(format(new Date(), "yyyy-MM-dd")) || false;
+
+  // ---------------------------
+  // Create pass (Supabase)
+  // ---------------------------
   const createPassMutation = useMutation({
-    mutationFn: async (data: { supabaseVehicleId: string; isParty: boolean }) => {
-      if (!unitId) throw new Error("Unit not found");
+    mutationFn: async (data: { vehicleId: string; isParty: boolean }) => {
+      if (!unitId) throw new Error("Missing unit");
 
-      // 1) Find the selected vehicle in Supabase list
-      const selected = vehicles.find((v) => v.id === data.supabaseVehicleId);
-      if (!selected) {
-        throw new Error("Selected vehicle not found in database list");
+      // 1) Confirm vehicle exists in Supabase vehicles table
+      const { data: vehicleRow, error: vehErr } = await supabase
+        .from("vehicles")
+        .select("id, licenseplate, make, model, color, nickname")
+        .eq("id", data.vehicleId)
+        .single();
+
+      if (vehErr || !vehicleRow) throw new Error("Vehicle not found");
+
+      // 2) Block duplicate active pass
+      const alreadyActive = await hasActivePass(data.vehicleId);
+      if (alreadyActive) throw new Error("This vehicle already has an active pass.");
+
+      // 3) Determine pass type/payment using existing unit/settings logic (for now)
+      const freeLimit = unitData?.freePassLimit ?? 12;
+      const price = settings?.pricePerPass ?? 5;
+
+      const todayStr = format(new Date(), "yyyy-MM-dd");
+      const todayIsParty = unitData?.partyDays?.includes(todayStr) ?? false;
+
+      let finalType: "free" | "paid" | "party" = "free";
+      let finalPaymentStatus: "free" | "paid" | "payment_required" | "waived" = "free";
+      let finalPrice: number | null = null;
+
+      if (data.isParty) {
+        finalType = "party";
+        finalPaymentStatus = "free";
+      } else {
+        if (todayIsParty) {
+          finalType = "free";
+          finalPaymentStatus = "free";
+        } else {
+          const freeUsed = await countFreePassesThisMonth(unitId);
+          if (freeUsed < freeLimit) {
+            finalType = "free";
+            finalPaymentStatus = "free";
+          } else {
+            finalType = "paid";
+            finalPaymentStatus = "payment_required";
+            finalPrice = price;
+          }
+        }
       }
 
-      // 2) Convert Supabase vehicle -> mock vehicle id (cached)
-      const existingMockId = vehicleIdMap[data.supabaseVehicleId];
+      // 4) Insert pass into Supabase
+      const nowIso = new Date().toISOString();
+      const expiresIso = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-      let mockVehicleId = existingMockId;
+      const created = await insertPass({
+        unit_id: unitId,
+        vehicle_id: data.vehicleId,
+        vehicle_snapshot: {
+          licensePlate: vehicleRow.licenseplate,
+          make: vehicleRow.make ?? "",
+          model: vehicleRow.model ?? "",
+          color: vehicleRow.color ?? "",
+          nickname: vehicleRow.nickname ?? undefined,
+        },
+        created_at: nowIso,
+        expires_at: expiresIso,
+        type: finalType,
+        payment_status: finalPaymentStatus,
+        price: finalPrice,
+      });
 
-      if (!mockVehicleId) {
-        // Create it once in the mock store so api.createPass can find it
-        const created = await api.addVehicle(unitId, {
-          licensePlate: selected.licensePlate,
-          make: selected.make,
-          model: selected.model,
-          color: selected.color,
-          nickname: selected.nickname ?? undefined,
-        });
-
-        mockVehicleId = created.id;
-
-        // Persist mapping
-        const next = { ...vehicleIdMap, [data.supabaseVehicleId]: mockVehicleId };
-        setVehicleIdMap(next);
-        saveVehicleIdMap(next);
-      }
-
-      // 3) Create pass using mock api
-      return api.createPass(unitId, mockVehicleId, data.isParty);
+      return created;
     },
+
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["passes"] });
       queryClient.invalidateQueries({ queryKey: ["unit"] });
@@ -174,6 +230,7 @@ export default function ResidentDashboard() {
       setSelectedVehicleId("");
       setPassType("regular");
     },
+
     onError: (error: any) => {
       toast({
         variant: "destructive",
@@ -185,39 +242,14 @@ export default function ResidentDashboard() {
 
   const handleCreatePass = () => {
     if (!selectedVehicleId) return;
-    createPassMutation.mutate({
-      supabaseVehicleId: selectedVehicleId,
-      isParty: passType === "party",
-    });
+    createPassMutation.mutate({ vehicleId: selectedVehicleId, isParty: passType === "party" });
   };
 
   const handleReissuePass = (vehicleId: string) => {
-    // Re-issue uses the mock vehicleId stored in the pass, so it still works
-    createPassMutation.mutate({
-      // IMPORTANT: this expects a supabase id, but reissue gives mock id.
-      // For now we block reissue to avoid confusion until passes move to DB.
-      supabaseVehicleId: "",
-      isParty: false,
-    });
+    createPassMutation.mutate({ vehicleId, isParty: false });
   };
 
   if (!unitId) return null;
-
-  const activePasses = passes?.filter((p) => isAfter(parseISO(p.expiresAt), new Date())) || [];
-  const expiredPasses = passes?.filter((p) => !isAfter(parseISO(p.expiresAt), new Date())) || [];
-
-  const currentMonth = new Date().getMonth();
-  const freePassesUsed =
-    passes?.filter((p) => {
-      const d = parseISO(p.createdAt);
-      return d.getMonth() === currentMonth && p.type === "free";
-    }).length || 0;
-
-  const freePassesRemaining = Math.max(0, (unitData?.freePassLimit || 12) - freePassesUsed);
-
-  const partyDaysUsed = unitData?.partyDays.filter((d) => new Date(d).getMonth() === currentMonth).length || 0;
-  const partyPassesRemaining = Math.max(0, (settings?.partyPassLimit || 3) - partyDaysUsed);
-  const isTodayPartyDay = unitData?.partyDays.includes(format(new Date(), "yyyy-MM-dd"));
 
   return (
     <Layout userType="resident" userName={unitLabel || ""}>
@@ -271,6 +303,7 @@ export default function ResidentDashboard() {
                 </DialogHeader>
 
                 <div className="space-y-6 py-4">
+                  {/* Select vehicle */}
                   <div className="space-y-3">
                     <label className="text-sm font-medium">Select Vehicle</label>
 
@@ -278,16 +311,13 @@ export default function ResidentDashboard() {
                       <SelectTrigger>
                         <SelectValue
                           placeholder={
-                            vehiclesLoading
-                              ? "Loading vehicles..."
-                              : vehiclesError
-                              ? "Error loading vehicles"
-                              : "Choose a vehicle..."
+                            vehiclesLoading ? "Loading vehicles..." : "Choose a vehicle..."
                           }
                         />
                       </SelectTrigger>
+
                       <SelectContent>
-                        {vehicles?.map((v) => (
+                        {vehicles.map((v) => (
                           <SelectItem key={v.id} value={v.id}>
                             {v.licensePlate} - {v.nickname || `${v.make} ${v.model}`}
                           </SelectItem>
@@ -310,9 +340,14 @@ export default function ResidentDashboard() {
                     </Select>
                   </div>
 
+                  {/* Pass Type */}
                   <div className="space-y-3">
                     <label className="text-sm font-medium">Pass Type</label>
-                    <RadioGroup value={passType} onValueChange={(v) => setPassType(v as "regular" | "party")}>
+
+                    <RadioGroup
+                      value={passType}
+                      onValueChange={(v) => setPassType(v as "regular" | "party")}
+                    >
                       <div className="flex items-center space-x-2 border p-3 rounded-md cursor-pointer hover:bg-muted/50 transition-colors">
                         <RadioGroupItem value="regular" id="r1" />
                         <Label htmlFor="r1" className="flex-1 cursor-pointer">
@@ -323,17 +358,23 @@ export default function ResidentDashboard() {
                           {isTodayPartyDay
                             ? "Free (Party Day)"
                             : freePassesRemaining > 0
-                            ? "Free"
-                            : `$${settings?.pricePerPass?.toFixed(2)}`}
+                              ? "Free"
+                              : `$${settings?.pricePerPass?.toFixed(2)}`}
                         </div>
                       </div>
 
                       <div
                         className={`flex items-center space-x-2 border p-3 rounded-md cursor-pointer hover:bg-muted/50 transition-colors ${
-                          partyPassesRemaining === 0 && !isTodayPartyDay ? "opacity-50 pointer-events-none" : ""
+                          partyPassesRemaining === 0 && !isTodayPartyDay
+                            ? "opacity-50 pointer-events-none"
+                            : ""
                         }`}
                       >
-                        <RadioGroupItem value="party" id="r2" disabled={partyPassesRemaining === 0 && !isTodayPartyDay} />
+                        <RadioGroupItem
+                          value="party"
+                          id="r2"
+                          disabled={partyPassesRemaining === 0 && !isTodayPartyDay}
+                        />
                         <Label htmlFor="r2" className="flex-1 cursor-pointer">
                           <div className="flex items-center gap-2">
                             <span className="font-medium">Party Pass</span>
@@ -343,7 +384,9 @@ export default function ResidentDashboard() {
                           </div>
                           <div className="text-xs text-muted-foreground">Unlimited passes for today</div>
                         </Label>
-                        <div className="text-xs font-medium">{isTodayPartyDay ? "Active" : `${partyPassesRemaining} left`}</div>
+                        <div className="text-xs font-medium">
+                          {isTodayPartyDay ? "Active" : `${partyPassesRemaining} left`}
+                        </div>
                       </div>
                     </RadioGroup>
                   </div>
@@ -353,7 +396,8 @@ export default function ResidentDashboard() {
                       <AlertCircle className="h-4 w-4" />
                       <AlertTitle>Payment Required</AlertTitle>
                       <AlertDescription>
-                        You have used all free passes for this month. This pass will cost ${settings?.pricePerPass?.toFixed(2)}.
+                        You have used all free passes for this month. This pass will cost $
+                        {settings?.pricePerPass?.toFixed(2)}.
                       </AlertDescription>
                     </Alert>
                   )}
@@ -363,7 +407,8 @@ export default function ResidentDashboard() {
                       <PartyPopper className="h-4 w-4 text-purple-700" />
                       <AlertTitle>Activate Party Mode</AlertTitle>
                       <AlertDescription>
-                        This will consume 1 of your {partyPassesRemaining} remaining party days. All passes created today will be free.
+                        This will consume 1 of your {partyPassesRemaining} remaining party days. All passes
+                        created today will be free.
                       </AlertDescription>
                     </Alert>
                   )}
@@ -375,7 +420,7 @@ export default function ResidentDashboard() {
                   </Button>
                   <Button
                     onClick={handleCreatePass}
-                    disabled={createPassMutation.isPending || !selectedVehicleId || !!vehiclesError}
+                    disabled={createPassMutation.isPending || !selectedVehicleId}
                   >
                     {createPassMutation.isPending ? "Creating..." : "Generate Pass"}
                   </Button>
@@ -385,7 +430,7 @@ export default function ResidentDashboard() {
           </Card>
         </div>
 
-        {/* Active Passes Section */}
+        {/* Active Passes */}
         <div className="space-y-4">
           <h2 className="text-xl font-display font-semibold flex items-center gap-2">
             <Clock className="w-5 h-5 text-primary" /> Active Passes
@@ -399,21 +444,30 @@ export default function ResidentDashboard() {
             </div>
           ) : (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {activePasses.map((pass) => (
-                <Card key={pass.id} className="overflow-hidden border-l-4 border-l-primary shadow-sm hover:shadow-md transition-shadow">
+              {activePasses.map((pass: any) => (
+                <Card
+                  key={pass.id}
+                  className="overflow-hidden border-l-4 border-l-primary shadow-sm hover:shadow-md transition-shadow"
+                >
                   <CardContent className="p-0">
                     <div className="p-5 flex justify-between items-start">
                       <div>
-                        <div className="font-display text-2xl font-bold tracking-wide mb-1">{pass.vehicleSnapshot.licensePlate}</div>
+                        <div className="font-display text-2xl font-bold tracking-wide mb-1">
+                          {pass.vehicleSnapshot?.licensePlate}
+                        </div>
                         <div className="text-sm text-muted-foreground mb-3">
-                          {pass.vehicleSnapshot.nickname || `${pass.vehicleSnapshot.color} ${pass.vehicleSnapshot.make}`}
+                          {pass.vehicleSnapshot?.nickname ||
+                            `${pass.vehicleSnapshot?.color} ${pass.vehicleSnapshot?.make}`}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Badge variant="secondary" className="bg-green-100 text-green-800 hover:bg-green-100">
                             Active
                           </Badge>
+
                           {pass.type === "party" ? (
-                            <Badge className="bg-purple-100 text-purple-800 hover:bg-purple-100 border-purple-200">Party Pass</Badge>
+                            <Badge className="bg-purple-100 text-purple-800 hover:bg-purple-100 border-purple-200">
+                              Party Pass
+                            </Badge>
                           ) : pass.type === "free" ? (
                             <Badge variant="outline" className="text-muted-foreground">
                               Free Pass
@@ -423,12 +477,13 @@ export default function ResidentDashboard() {
                               {pass.paymentStatus === "paid"
                                 ? "Paid"
                                 : pass.paymentStatus === "waived"
-                                ? "Waived"
-                                : `Due $${pass.price}`}
+                                  ? "Waived"
+                                  : `Due $${pass.price}`}
                             </Badge>
                           )}
                         </div>
                       </div>
+
                       <div className="bg-white p-2 rounded-lg shadow-sm border">
                         <QRCodeSVG value={pass.id} size={64} />
                       </div>
@@ -447,7 +502,7 @@ export default function ResidentDashboard() {
           )}
         </div>
 
-        {/* History Section */}
+        {/* History */}
         <div className="space-y-4 pt-4">
           <h2 className="text-xl font-display font-semibold flex items-center gap-2">
             <History className="w-5 h-5 text-muted-foreground" /> Recent History
@@ -455,20 +510,31 @@ export default function ResidentDashboard() {
 
           <Card>
             <div className="divide-y">
-              {expiredPasses.slice(0, 5).map((pass) => (
-                <div key={pass.id} className="p-4 flex items-center justify-between hover:bg-muted/30 transition-colors">
+              {expiredPasses.slice(0, 5).map((pass: any) => (
+                <div
+                  key={pass.id}
+                  className="p-4 flex items-center justify-between hover:bg-muted/30 transition-colors"
+                >
                   <div>
-                    <div className="font-medium">{pass.vehicleSnapshot.licensePlate}</div>
-                    <div className="text-xs text-muted-foreground">{format(parseISO(pass.createdAt), "MMM d, yyyy")}</div>
+                    <div className="font-medium">{pass.vehicleSnapshot?.licensePlate}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {format(parseISO(pass.createdAt), "MMM d, yyyy")}
+                    </div>
                   </div>
+
                   <div className="flex items-center gap-4">
                     <div className="text-right hidden sm:block">
                       <div className="text-xs text-muted-foreground">Status</div>
                       <div className="text-sm font-medium">Expired</div>
                     </div>
 
-                    {/* Re-issue disabled for now until passes are DB-backed */}
-                    <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground" disabled>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="gap-1 text-primary hover:text-primary hover:bg-primary/10"
+                      onClick={() => handleReissuePass(pass.vehicleId)}
+                      disabled={createPassMutation.isPending}
+                    >
                       <RefreshCw className="w-3 h-3" /> Re-issue
                     </Button>
                   </div>
@@ -476,7 +542,9 @@ export default function ResidentDashboard() {
               ))}
 
               {expiredPasses.length === 0 && (
-                <div className="p-8 text-center text-muted-foreground text-sm">No pass history available.</div>
+                <div className="p-8 text-center text-muted-foreground text-sm">
+                  No pass history available.
+                </div>
               )}
             </div>
           </Card>
