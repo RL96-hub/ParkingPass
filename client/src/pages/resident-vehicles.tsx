@@ -17,7 +17,7 @@ import { supabase } from "@/lib/supabase";
 
 type Vehicle = {
   id: string;
-  licensePlate: string;
+  licenseplate: string;
   make: string;
   model: string;
   color: string;
@@ -30,7 +30,7 @@ function normalizePlate(input: string) {
 }
 
 const vehicleSchema = z.object({
-  licensePlate: z
+  licenseplate: z
     .string()
     .min(2, "License plate is required")
     .transform((v) => normalizePlate(v)),
@@ -74,7 +74,7 @@ export default function ResidentVehicles() {
 
   const form = useForm<z.infer<typeof vehicleSchema>>({
     resolver: zodResolver(vehicleSchema),
-    defaultValues: { licensePlate: "", make: "", model: "", color: "", nickname: "" },
+    defaultValues: { licenseplate: "", make: "", model: "", color: "", nickname: "" },
   });
 
   // Reset form when dialog opens/closes
@@ -83,14 +83,14 @@ export default function ResidentVehicles() {
 
     if (editingVehicle) {
       form.reset({
-        licensePlate: editingVehicle.licensePlate,
+        licenseplate: editingVehicle.licenseplate,
         make: editingVehicle.make,
         model: editingVehicle.model,
         color: editingVehicle.color,
         nickname: editingVehicle.nickname || "",
       });
     } else {
-      form.reset({ licensePlate: "", make: "", model: "", color: "", nickname: "" });
+      form.reset({ licenseplate: "", make: "", model: "", color: "", nickname: "" });
     }
   }, [isDialogOpen, editingVehicle, form]);
 
@@ -111,7 +111,7 @@ export default function ResidentVehicles() {
 
       return (data ?? []).map((v: any) => ({
         id: v.id,
-        licensePlate: v.licenseplate,
+        licenseplate: v.licenseplate,
         make: v.make ?? "",
         model: v.model ?? "",
         color: v.color ?? "",
@@ -126,7 +126,7 @@ export default function ResidentVehicles() {
         {
           building: buildingNumber!,
           unit: unitNumber!,
-          licenseplate: data.licensePlate,
+          licenseplate: data.licenseplate,
           make: data.make,
           model: data.model,
           color: data.color,
@@ -155,7 +155,7 @@ export default function ResidentVehicles() {
       const { error } = await supabase
         .from("vehicles")
         .update({
-          licenseplate: data.licensePlate,
+          licenseplate: data.licenseplate,
           make: data.make,
           model: data.model,
           color: data.color,
@@ -233,7 +233,7 @@ export default function ResidentVehicles() {
               <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
                 <FormField
                   control={form.control}
-                  name="licensePlate"
+                  name="licenseplate"
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>License Plate</FormLabel>
@@ -324,7 +324,7 @@ export default function ResidentVehicles() {
               <Card key={vehicle.id} className="relative group hover:border-primary/50 transition-colors">
                 <CardHeader className="pb-2">
                   <CardTitle className="flex justify-between items-start">
-                    <span className="font-display tracking-wide">{vehicle.licensePlate}</span>
+                    <span className="font-display tracking-wide">{vehicle.licenseplate}</span>
                     <div className="flex gap-1">
                       <Button
                         variant="ghost"
