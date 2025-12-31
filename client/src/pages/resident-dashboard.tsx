@@ -178,7 +178,7 @@ const { data: vehicles, isLoading: vehiclesLoading } = useQuery({
                       <SelectContent>
                         {vehicles?.map(v => (
                           <SelectItem key={v.id} value={v.id}>
-                            {v.licensePlate} - {v.nickname || `${v.make} ${v.model}`}
+                            {v.licenseplate} - {v.nickname || `${v.make} ${v.model}`}
                           </SelectItem>
                         ))}
                         <div className="p-2 border-t mt-1">
