@@ -100,7 +100,7 @@ export default function ResidentVehicles() {
     queryFn: async (): Promise<Vehicle[]> => {
       const { data, error } = await supabase
         .from("vehicles")
-        .select("id, license_plate, make, model, color, nickname, created_at")
+        .select("id, licenseplate, make, model, color, nickname, created_at")
         .eq("building", buildingNumber!)
         .eq("unit", unitNumber!)
         .order("created_at", { ascending: false });
@@ -111,7 +111,7 @@ export default function ResidentVehicles() {
 
       return (data ?? []).map((v: any) => ({
         id: v.id,
-        licensePlate: v.license_plate,
+        licensePlate: v.licenseplate,
         make: v.make ?? "",
         model: v.model ?? "",
         color: v.color ?? "",
@@ -126,7 +126,7 @@ export default function ResidentVehicles() {
         {
           building: buildingNumber!,
           unit: unitNumber!,
-          license_plate: data.licensePlate,
+          licenseplate: data.licensePlate,
           make: data.make,
           model: data.model,
           color: data.color,
@@ -155,7 +155,7 @@ export default function ResidentVehicles() {
       const { error } = await supabase
         .from("vehicles")
         .update({
-          license_plate: data.licensePlate,
+          licenseplate: data.licensePlate,
           make: data.make,
           model: data.model,
           color: data.color,
