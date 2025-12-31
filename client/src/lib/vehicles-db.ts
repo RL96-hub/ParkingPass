@@ -3,7 +3,7 @@ import { supabase } from "@/lib/supabase";
 export type VehicleRow = {
   id: string;
   unit_id: string;
-  license_plate: string;
+  licenseplate: string;
   make: string;
   model: string;
   color: string;
