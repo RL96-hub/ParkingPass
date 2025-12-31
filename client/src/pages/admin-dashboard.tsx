@@ -1,5 +1,4 @@
-// client/src/pages/admin-dashboard.tsx
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format, parseISO } from "date-fns";
@@ -15,30 +14,56 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 
-// Units/buildings/settings are still coming from mock-data for now (that’s OK)
 import { api } from "@/lib/mock-data";
+import { getAllPassesSupabase, updatePassPaymentStatusSupabase, PassRow } from "@/lib/passes-db";
 
-// ✅ passes now come from Supabase
-import {
-  getAllPassesSupabase,
-  updatePassPaymentStatusSupabase,
-  PassRow,
-} from "@/lib/passes-db";
+type UIPass = {
+  id: string;
+  unitId: string;
+  vehicleSnapshot: {
+    licensePlate: string;
+    make: string;
+    model: string;
+    color: string;
+    nickname?: string | null;
+  };
+  createdAt: string;
+  expiresAt: string;
+  type: "free" | "paid" | "party";
+  paymentStatus: "free" | "paid" | "payment_required" | "waived";
+  price: number | null;
+};
+
+function toUIPass(p: PassRow): UIPass {
+  return {
+    id: p.id,
+    unitId: p.unit_id,
+    vehicleSnapshot: p.vehicle_snapshot,
+    createdAt: p.created_at,
+    expiresAt: p.expires_at,
+    type: p.type,
+    paymentStatus: p.payment_status,
+    price: p.price ?? null,
+  };
+}
 
 export default function AdminDashboard() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
 
-  // ✅ Supabase passes
-  const { data: passes, isLoading } = useQuery({
+  // ✅ Passes from Supabase
+  const { data: passesRaw, isLoading: passesLoading } = useQuery({
     queryKey: ["all-passes"],
     queryFn: getAllPassesSupabase,
   });
 
-  // still mock units
+  const passes: UIPass[] = useMemo(() => (passesRaw ?? []).map(toUIPass), [passesRaw]);
+
+  // Units still coming from your current API layer (whatever it is today)
   const { data: units } = useQuery({
     queryKey: ["units"],
     queryFn: api.getUnits,
@@ -52,65 +77,79 @@ export default function AdminDashboard() {
       toast({ title: "Status Updated" });
     },
     onError: (err: any) => {
-      toast({
-        variant: "destructive",
-        title: "Update failed",
-        description: err?.message ?? "Could not update payment status.",
-      });
+      toast({ variant: "destructive", title: "Update Failed", description: err?.message ?? String(err) });
     },
   });
 
-  // Filter Logic
-  const filteredPasses =
-    passes?.filter((p: PassRow) => {
-      const unit = units?.find((u: any) => u.id === p.unit_id);
-      const unitStr = unit ? `${unit.buildingNumber}-${unit.number}` : "";
+  const filteredPasses = useMemo(() => {
+    return passes.filter((p) => {
+      const unit = units?.find((u: any) => u.id === p.unitId);
 
-      const plate = p.vehicle_snapshot?.licensePlate ?? "";
-      const make = p.vehicle_snapshot?.make ?? "";
+      // Support both shapes: either unit.buildingNumber + unit.number, OR unit.building.number style
+      const buildingNumber =
+        unit?.buildingNumber ??
+        unit?.building?.number ??
+        unit?.building_number ??
+        unit?.buildingNumber ??
+        "";
+      const unitNumber = unit?.number ?? unit?.unitNumber ?? unit?.unit_number ?? "";
+
+      const unitStr = buildingNumber && unitNumber ? `${buildingNumber}-${unitNumber}` : "";
 
       const searchMatch =
-        plate.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        make.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        unitStr.includes(searchTerm);
+        p.vehicleSnapshot.licensePlate.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        p.vehicleSnapshot.make.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        unitStr.toLowerCase().includes(searchTerm.toLowerCase());
 
       if (statusFilter === "all") return searchMatch;
-      if (statusFilter === "active") return searchMatch && new Date(p.expires_at) > new Date();
-      if (statusFilter === "unpaid") return searchMatch && p.payment_status === "payment_required";
+      if (statusFilter === "active") return searchMatch && new Date(p.expiresAt) > new Date();
+      if (statusFilter === "unpaid") return searchMatch && p.paymentStatus === "payment_required";
 
       return searchMatch;
-    }) || [];
+    });
+  }, [passes, units, searchTerm, statusFilter]);
 
-  // Stats
-  const activeCount = passes?.filter((p) => new Date(p.expires_at) > new Date()).length || 0;
-  const unpaidCount = passes?.filter((p) => p.payment_status === "payment_required").length || 0;
+  const activeCount = useMemo(
+    () => passes.filter((p) => new Date(p.expiresAt) > new Date()).length,
+    [passes]
+  );
+  const unpaidCount = useMemo(
+    () => passes.filter((p) => p.paymentStatus === "payment_required").length,
+    [passes]
+  );
 
-  const unitUsage =
-    units
-      ?.map((u: any) => ({
-        name: `B${u.buildingNumber}-${u.number}`,
-        count: passes?.filter((p) => p.unit_id === u.id).length || 0,
-      }))
-      .sort((a: any, b: any) => b.count - a.count)
-      .slice(0, 5) || [];
+  const unitUsage = useMemo(() => {
+    if (!units) return [];
+    const usage = (units as any[]).map((u) => {
+      const buildingNumber =
+        u?.buildingNumber ?? u?.building?.number ?? u?.building_number ?? "";
+      const name = buildingNumber ? `B${buildingNumber}-${u.number}` : `Unit-${u.number}`;
+      const count = passes.filter((p) => p.unitId === u.id).length;
+      return { name, count };
+    });
+    return usage.sort((a, b) => b.count - a.count).slice(0, 5);
+  }, [units, passes]);
 
   const handleExport = () => {
-    if (!passes) return;
-
     const csv = [
       ["Pass ID", "Building", "Unit", "License Plate", "Make", "Created", "Expires", "Type", "Status"],
       ...passes.map((p) => {
-        const u = units?.find((uu: any) => uu.id === p.unit_id);
+        const u = units?.find((x: any) => x.id === p.unitId);
+
+        const buildingNumber =
+          u?.buildingNumber ?? u?.building?.number ?? u?.building_number ?? "Unknown";
+        const unitNumber = u?.number ?? u?.unitNumber ?? u?.unit_number ?? "Unknown";
+
         return [
           p.id,
-          u?.buildingNumber || "Unknown",
-          u?.number || "Unknown",
-          p.vehicle_snapshot?.licensePlate ?? "",
-          p.vehicle_snapshot?.make ?? "",
-          p.created_at,
-          p.expires_at,
+          buildingNumber,
+          unitNumber,
+          p.vehicleSnapshot.licensePlate,
+          p.vehicleSnapshot.make,
+          p.createdAt,
+          p.expiresAt,
           p.type,
-          p.payment_status,
+          p.paymentStatus,
         ];
       }),
     ]
@@ -145,6 +184,7 @@ export default function AdminDashboard() {
               <div className="text-3xl font-bold">{activeCount}</div>
             </CardContent>
           </Card>
+
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium">Outstanding Payments</CardTitle>
@@ -153,12 +193,13 @@ export default function AdminDashboard() {
               <div className="text-3xl font-bold text-destructive">{unpaidCount}</div>
             </CardContent>
           </Card>
+
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium">Total Passes (All Time)</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold">{passes?.length || 0}</div>
+              <div className="text-3xl font-bold">{passes.length}</div>
             </CardContent>
           </Card>
         </div>
@@ -176,6 +217,7 @@ export default function AdminDashboard() {
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
+
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="w-[180px]">
                   <SelectValue placeholder="Filter Status" />
@@ -201,8 +243,9 @@ export default function AdminDashboard() {
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
+
                 <TableBody>
-                  {isLoading ? (
+                  {passesLoading ? (
                     <TableRow>
                       <TableCell colSpan={7} className="text-center py-8">
                         Loading...
@@ -216,32 +259,39 @@ export default function AdminDashboard() {
                     </TableRow>
                   ) : (
                     filteredPasses.slice(0, 10).map((pass) => {
-                      const u = units?.find((uu: any) => uu.id === pass.unit_id);
-                      const plate = pass.vehicle_snapshot?.licensePlate ?? "";
-                      const make = pass.vehicle_snapshot?.make ?? "";
+                      const u = units?.find((x: any) => x.id === pass.unitId);
+
+                      const buildingNumber =
+                        u?.buildingNumber ?? u?.building?.number ?? u?.building_number ?? "";
+                      const unitNumber = u?.number ?? u?.unitNumber ?? u?.unit_number ?? "";
 
                       return (
                         <TableRow key={pass.id}>
                           <TableCell className="font-medium">
-                            {u ? `B${u.buildingNumber}-${u.number}` : "Unknown"}
+                            {buildingNumber && unitNumber ? `B${buildingNumber}-${unitNumber}` : "Unknown"}
                           </TableCell>
+
                           <TableCell>
-                            <div className="font-mono">{plate}</div>
-                            <div className="text-xs text-muted-foreground">{make}</div>
+                            <div className="font-mono">{pass.vehicleSnapshot.licensePlate}</div>
+                            <div className="text-xs text-muted-foreground">{pass.vehicleSnapshot.make}</div>
                           </TableCell>
+
                           <TableCell>
-                            {new Date(pass.expires_at) > new Date() ? (
+                            {new Date(pass.expiresAt) > new Date() ? (
                               <Badge className="bg-green-500">Active</Badge>
                             ) : (
                               <Badge variant="outline">Expired</Badge>
                             )}
                           </TableCell>
+
                           <TableCell className="text-xs">
-                            {format(parseISO(pass.created_at), "MM/dd HH:mm")}
+                            {format(parseISO(pass.createdAt), "MM/dd HH:mm")}
                           </TableCell>
+
                           <TableCell className="text-xs text-muted-foreground">
-                            {format(parseISO(pass.expires_at), "MM/dd HH:mm")}
+                            {format(parseISO(pass.expiresAt), "MM/dd HH:mm")}
                           </TableCell>
+
                           <TableCell>
                             {pass.type === "free" ? (
                               <Badge variant="secondary">Free</Badge>
@@ -250,26 +300,23 @@ export default function AdminDashboard() {
                                 Party
                               </Badge>
                             ) : (
-                              <Badge
-                                variant={pass.payment_status === "paid" ? "default" : "destructive"}
-                              >
-                                {pass.payment_status === "payment_required"
+                              <Badge variant={pass.paymentStatus === "paid" ? "default" : "destructive"}>
+                                {pass.paymentStatus === "payment_required"
                                   ? `Due $${pass.price ?? ""}`
-                                  : pass.payment_status}
+                                  : pass.paymentStatus}
                               </Badge>
                             )}
                           </TableCell>
+
                           <TableCell className="text-right">
-                            {pass.payment_status === "payment_required" && (
+                            {pass.paymentStatus === "payment_required" && (
                               <div className="flex justify-end gap-1">
                                 <Button
                                   size="icon"
                                   variant="ghost"
                                   className="h-6 w-6 text-green-600"
                                   title="Mark Paid"
-                                  onClick={() =>
-                                    updatePaymentMutation.mutate({ id: pass.id, status: "paid" })
-                                  }
+                                  onClick={() => updatePaymentMutation.mutate({ id: pass.id, status: "paid" })}
                                 >
                                   <Check className="w-4 h-4" />
                                 </Button>
@@ -278,9 +325,7 @@ export default function AdminDashboard() {
                                   variant="ghost"
                                   className="h-6 w-6 text-muted-foreground"
                                   title="Waive"
-                                  onClick={() =>
-                                    updatePaymentMutation.mutate({ id: pass.id, status: "waived" })
-                                  }
+                                  onClick={() => updatePaymentMutation.mutate({ id: pass.id, status: "waived" })}
                                 >
                                   <X className="w-4 h-4" />
                                 </Button>
@@ -306,14 +351,9 @@ export default function AdminDashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={unitUsage} layout="vertical" margin={{ left: 20 }}>
                     <XAxis type="number" hide />
-                    <YAxis dataKey="name" type="category" width={60} tick={{ fontSize: 12 }} />
+                    <YAxis dataKey="name" type="category" width={80} tick={{ fontSize: 12 }} />
                     <Tooltip cursor={{ fill: "transparent" }} />
-                    <Bar
-                      dataKey="count"
-                      fill="hsl(var(--primary))"
-                      radius={[0, 4, 4, 0]}
-                      barSize={20}
-                    />
+                    <Bar dataKey="count" radius={[0, 4, 4, 0]} barSize={20} />
                   </BarChart>
                 </ResponsiveContainer>
               </CardContent>
