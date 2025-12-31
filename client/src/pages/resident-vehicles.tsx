@@ -17,7 +17,8 @@ import { supabase } from "@/lib/supabase";
 
 type Vehicle = {
   id: string;
-  unitId: string;
+  building: string;
+  unit: string;
   licensePlate: string;
   make: string;
   model: string;
@@ -42,7 +43,9 @@ export default function ResidentVehicles() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const [unitId, setUnitId] = useState<string | null>(null);
+  const [unitId, setUnitId] = useState<string | null>(null); // kept for login compatibility
+  const [buildingNumber, setBuildingNumber] = useState<string | null>(null);
+  const [unitNumber, setUnitNumber] = useState<string | null>(null);
   const [unitLabel, setUnitLabel] = useState<string | null>(null);
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -53,15 +56,16 @@ export default function ResidentVehicles() {
     const num = localStorage.getItem("unitNumber");
     const bldg = localStorage.getItem("buildingNumber");
 
-    if (!id) {
+    // For Supabase vehicles we REQUIRE building + unit
+    if (!id || !num || !bldg) {
       setLocation("/");
       return;
     }
 
     setUnitId(id);
-
-    if (bldg && num) setUnitLabel(`Bldg ${bldg} - Unit ${num}`);
-    else setUnitLabel(num);
+    setBuildingNumber(bldg);
+    setUnitNumber(num);
+    setUnitLabel(`Bldg ${bldg} - Unit ${num}`);
   }, [setLocation]);
 
   const form = useForm<z.infer<typeof vehicleSchema>>({
@@ -86,20 +90,22 @@ export default function ResidentVehicles() {
   }, [isDialogOpen, editingVehicle, form]);
 
   const { data: vehicles = [], isLoading } = useQuery({
-    queryKey: ["vehicles", unitId],
-    enabled: !!unitId,
+    queryKey: ["vehicles", buildingNumber, unitNumber],
+    enabled: !!buildingNumber && !!unitNumber,
     queryFn: async (): Promise<Vehicle[]> => {
       const { data, error } = await supabase
         .from("vehicles")
-        .select("id, unit_id, licenseplate, make, model, color, nickname, created_at")
-        .eq("unit_id", unitId!)
+        .select("id, building, unit, licenseplate, make, model, color, nickname, created_at")
+        .eq("building", buildingNumber!)
+        .eq("unit", unitNumber!)
         .order("created_at", { ascending: false });
 
       if (error) throw error;
 
       return (data ?? []).map((v: any) => ({
         id: v.id,
-        unitId: v.unit_id,
+        building: v.building,
+        unit: v.unit,
         licensePlate: v.licenseplate,
         make: v.make ?? "",
         model: v.model ?? "",
@@ -113,7 +119,8 @@ export default function ResidentVehicles() {
     mutationFn: async (data: z.infer<typeof vehicleSchema>) => {
       const { error } = await supabase.from("vehicles").insert([
         {
-          unit_id: unitId!,
+          building: buildingNumber!,
+          unit: unitNumber!,
           licenseplate: data.licensePlate,
           make: data.make,
           model: data.model,
@@ -149,7 +156,8 @@ export default function ResidentVehicles() {
           nickname: data.nickname || null,
         })
         .eq("id", editingVehicle!.id)
-        .eq("unit_id", unitId!);
+        .eq("building", buildingNumber!)
+        .eq("unit", unitNumber!);
 
       if (error) throw error;
     },
@@ -170,7 +178,13 @@ export default function ResidentVehicles() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from("vehicles").delete().eq("id", id).eq("unit_id", unitId!);
+      const { error } = await supabase
+        .from("vehicles")
+        .delete()
+        .eq("id", id)
+        .eq("building", buildingNumber!)
+        .eq("unit", unitNumber!);
+
       if (error) throw error;
     },
     onSuccess: () => {
@@ -289,7 +303,11 @@ export default function ResidentVehicles() {
 
                 <DialogFooter className="mt-4">
                   <Button type="submit" disabled={addMutation.isPending || updateMutation.isPending}>
-                    {addMutation.isPending || updateMutation.isPending ? <Loader2 className="animate-spin" /> : "Save Vehicle"}
+                    {addMutation.isPending || updateMutation.isPending ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      "Save Vehicle"
+                    )}
                   </Button>
                 </DialogFooter>
               </form>
@@ -323,7 +341,9 @@ export default function ResidentVehicles() {
                         size="icon"
                         className="h-8 w-8 hover:text-destructive"
                         onClick={() => {
-                          if (confirm("Are you sure you want to delete this vehicle?")) deleteMutation.mutate(vehicle.id);
+                          if (confirm("Are you sure you want to delete this vehicle?")) {
+                            deleteMutation.mutate(vehicle.id);
+                          }
                         }}
                       >
                         <Trash2 className="w-4 h-4 text-muted-foreground" />
