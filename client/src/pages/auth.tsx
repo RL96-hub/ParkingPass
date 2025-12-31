@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter }
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { api } from "@/lib/mock-data";
+import { supabase } from "@/lib/supabase";
 import generatedImage from '@assets/generated_images/minimalist_architectural_abstract_background_in_blue_and_white.png';
 
 const residentSchema = z.object({
@@ -40,43 +40,93 @@ export default function AuthPage() {
   });
 
   const onResidentSubmit = async (data: z.infer<typeof residentSchema>) => {
-    setIsLoading(true);
-    try {
-      const unit = await api.loginResident(data.buildingNumber, data.unitNumber, data.accessCode);
-      if (unit) {
-        localStorage.setItem("userType", "resident");
-        localStorage.setItem("unitId", unit.id);
-        localStorage.setItem("unitNumber", unit.number);
-        localStorage.setItem("buildingNumber", unit.buildingNumber);
-        toast({ title: "Welcome back", description: `Logged in as Building ${unit.buildingNumber}, Unit ${unit.number}` });
-        setLocation("/dashboard");
-      } else {
-        toast({ variant: "destructive", title: "Login Failed", description: "Invalid building, unit, or access code" });
-      }
-    } catch (error) {
-      toast({ variant: "destructive", title: "Error", description: "Something went wrong" });
-    } finally {
-      setIsLoading(false);
+  setIsLoading(true);
+  try {
+    // Find building by number
+    const { data: building, error: buildingError } = await supabase
+      .from("buildings")
+      .select("id, number")
+      .eq("number", data.buildingNumber)
+      .single();
+
+    if (buildingError || !building) {
+      toast({
+        variant: "destructive",
+        title: "Login Failed",
+        description: "Invalid building, unit, or access code",
+      });
+      return;
     }
-  };
+
+    // Find unit by building + unit number + access code
+    const { data: unit, error: unitError } = await supabase
+      .from("units")
+      .select("id, number, access_code, building_id")
+      .eq("building_id", building.id)
+      .eq("number", data.unitNumber)
+      .eq("access_code", data.accessCode)
+      .single();
+
+    if (unitError || !unit) {
+      toast({
+        variant: "destructive",
+        title: "Login Failed",
+        description: "Invalid building, unit, or access code",
+      });
+      return;
+    }
+
+    localStorage.setItem("userType", "resident");
+    localStorage.setItem("unitId", unit.id);
+    localStorage.setItem("unitNumber", unit.number);
+    localStorage.setItem("buildingNumber", String(building.number));
+
+    toast({
+      title: "Welcome back",
+      description: `Logged in as Building ${building.number}, Unit ${unit.number}`,
+    });
+
+    setLocation("/dashboard");
+  } catch (error) {
+    toast({ variant: "destructive", title: "Error", description: "Something went wrong" });
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   const onAdminSubmit = async (data: z.infer<typeof adminSchema>) => {
-    setIsLoading(true);
-    try {
-      const success = await api.loginAdmin(data.password);
-      if (success) {
-        localStorage.setItem("userType", "admin");
-        toast({ title: "Admin Access Granted", description: "Welcome, Administrator" });
-        setLocation("/admin");
-      } else {
-        toast({ variant: "destructive", title: "Access Denied", description: "Invalid password" });
-      }
-    } catch (error) {
-      toast({ variant: "destructive", title: "Error", description: "Something went wrong" });
-    } finally {
-      setIsLoading(false);
+  setIsLoading(true);
+  try {
+    // Pull admin password from DB settings table
+    const { data: settings, error } = await supabase
+      .from("settings")
+      .select("admin_password")
+      .single();
+
+    if (error || !settings?.admin_password) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Admin login is not configured in the database",
+      });
+      return;
     }
-  };
+
+    const success = data.password === settings.admin_password;
+
+    if (success) {
+      localStorage.setItem("userType", "admin");
+      toast({ title: "Admin Access Granted", description: "Welcome, Administrator" });
+      setLocation("/admin");
+    } else {
+      toast({ variant: "destructive", title: "Access Denied", description: "Invalid password" });
+    }
+  } catch (error) {
+    toast({ variant: "destructive", title: "Error", description: "Something went wrong" });
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   const Branding = () => (
     <div className="flex flex-col">
