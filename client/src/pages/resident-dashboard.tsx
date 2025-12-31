@@ -53,15 +53,16 @@ export default function ResidentDashboard() {
     enabled: !!unitId,
   });
 
-const { data: vehicles, isLoading: vehiclesLoading } = useQuery({
-  queryKey: ["vehicles", unitId],
-  queryFn: () => getVehiclesByUnit(unitId!),
-  enabled: !!unitId,
-//const { data: vehicles } = useQuery({
-//    queryKey: ["vehicles", unitId],
-//    queryFn: () => api.getVehicles(unitId!),
-//    enabled: !!unitId,
+  const { data: vehicles = [], isLoading: vehiclesLoading } = useQuery<VehicleRow[]>({
+    queryKey: ["vehicles", unitId],
+    queryFn: () => getVehiclesByUnit(unitId!),
+    enabled: !!unitId,
   });
+  //const { data: vehicles } = useQuery({
+  //  queryKey: ["vehicles", unitId],
+  //  queryFn: () => api.getVehicles(unitId!),
+  //  enabled: !!unitId,
+  //});
 
   const { data: unitData } = useQuery({
     queryKey: ["unit", unitId],
