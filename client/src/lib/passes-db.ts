@@ -2,10 +2,15 @@
 import { supabase } from "@/lib/supabase";
 
 /**
- * IMPORTANT:
- * - This file must export: getPassesByUnit, insertPass, hasActivePass
- *   because resident-dashboard.tsx imports them.
- * - We also export admin helpers: getAllPassesSupabase, updatePassPaymentStatusSupabase
+ * Backward-compatible exports expected by resident-dashboard.tsx:
+ * - getPassesByUnit
+ * - insertPass
+ * - hasActivePass
+ * - countFreePassesThisMonth
+ *
+ * Plus admin helpers:
+ * - getAllPassesSupabase
+ * - updatePassPaymentStatusSupabase
  */
 
 export type VehicleSnapshot = {
@@ -21,13 +26,11 @@ export type PassRow = {
   unit_id: string;
   vehicle_id: string;
 
-  // Stored as JSON in Supabase
   vehicle_snapshot: VehicleSnapshot;
 
   created_at: string;
   expires_at: string;
 
-  // app-level fields
   type: "free" | "paid" | "party";
   payment_status: "free" | "paid" | "payment_required" | "waived";
   price: number | null;
@@ -43,7 +46,10 @@ export type InsertPassInput = {
   price?: number | null;
 };
 
-/** Resident: list passes for unit */
+// --------------------
+// Resident functions
+// --------------------
+
 export async function getPassesByUnit(unitId: string): Promise<PassRow[]> {
   const { data, error } = await supabase
     .from("passes")
@@ -55,7 +61,6 @@ export async function getPassesByUnit(unitId: string): Promise<PassRow[]> {
   return (data ?? []) as PassRow[];
 }
 
-/** Resident: insert pass */
 export async function insertPass(input: InsertPassInput): Promise<PassRow> {
   const payload = {
     unit_id: input.unitId,
@@ -77,7 +82,6 @@ export async function insertPass(input: InsertPassInput): Promise<PassRow> {
   return data as PassRow;
 }
 
-/** Resident: check active pass for a specific vehicle (or any vehicle) */
 export async function hasActivePass(unitId: string, vehicleId?: string): Promise<boolean> {
   const nowIso = new Date().toISOString();
 
@@ -95,7 +99,42 @@ export async function hasActivePass(unitId: string, vehicleId?: string): Promise
   return (count ?? 0) > 0;
 }
 
-/** Admin: list all passes */
+/**
+ * Counts how many FREE passes were created this month for a unit.
+ * We count rows where:
+ * - unit_id = unitId
+ * - type = "free"   (or payment_status = "free" if your dashboard uses that)
+ * - created_at within current month
+ */
+export async function countFreePassesThisMonth(unitId: string): Promise<number> {
+  const start = new Date();
+  start.setDate(1);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1);
+
+  // We filter by type="free" (preferred).
+  // If your schema uses payment_status="free" instead, we include OR logic.
+  // Supabase doesn't support OR nicely with typed builder here, so we do one query.
+  const { data, error } = await supabase
+    .from("passes")
+    .select("id, type, payment_status, created_at")
+    .eq("unit_id", unitId)
+    .gte("created_at", start.toISOString())
+    .lt("created_at", end.toISOString());
+
+  if (error) throw error;
+
+  const rows = data ?? [];
+  const count = rows.filter((r: any) => r.type === "free" || r.payment_status === "free").length;
+  return count;
+}
+
+// --------------------
+// Admin helpers
+// --------------------
+
 export async function getAllPassesSupabase(): Promise<PassRow[]> {
   const { data, error } = await supabase
     .from("passes")
@@ -106,7 +145,6 @@ export async function getAllPassesSupabase(): Promise<PassRow[]> {
   return (data ?? []) as PassRow[];
 }
 
-/** Admin: update payment status */
 export async function updatePassPaymentStatusSupabase(passId: string, status: "paid" | "waived") {
   const { error } = await supabase.from("passes").update({ payment_status: status }).eq("id", passId);
   if (error) throw error;
